@@ -64,7 +64,7 @@ def generate_dataloader(dataset_config,shuffle = True):
 
 
 # Training function
-def train(model,optimizer,train_loader,num_epochs,beta)
+def train(model,optimizer,train_loader,num_epochs,beta):
     train_loss = []
     for epoch in range(num_epochs):
         model.train()
