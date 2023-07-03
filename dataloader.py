@@ -1,13 +1,19 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-
+import tensorflow as tf
 # A custom dataset handler to iterate the data
 class CustomDataset(Dataset):
     def __init__(self, data):
-        self.data = data
+        self.data = data# Perform modification using TensorFlow operations
+        last_n_data = self.data['input_sequence'][:, :, -9:]
+        modified_data = (last_n_data + 1) / 2
+
+        # Create a new tensor with the modified values
+        self.data['input_sequence'] = tf.concat([self.data['input_sequence'][:, :, :-9], modified_data], axis=-1)
 
     def __getitem__(self, idx):
+        
         input_seq = np.array(self.data['input_sequence'][idx])
         output_seq = np.array(self.data['output_sequence'][idx])
         seq_length = np.array(self.data['sequence_length'][idx])
@@ -22,4 +28,4 @@ class CustomDataset(Dataset):
         }
 
     def __len__(self):
-        return len(self.data['input_sequence'])
+        return self.data['input_sequence'].shape[0]

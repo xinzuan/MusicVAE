@@ -9,6 +9,7 @@ class HierarchicalDecoder(nn.Module):
         self.latent_dim = latent_dim
         self.output_size = output_size
         self.conductor_hidden_size = conductor_hidden_size
+        self.bottom_decoder_hidden_size=bottom_decoder_hidden_size
         
         # Fully connected layer for latent vector z
         self.fc_z = nn.Linear(latent_dim,conductor_hidden_size)
@@ -16,10 +17,12 @@ class HierarchicalDecoder(nn.Module):
 
 
         # Conductor RNN: two-layer unidirectional LSTM
-        self.conductor_rnn = nn.LSTM(batch_first=True,input_size=conductor_hidden_size, hidden_size=conductor_hidden_size, num_layers=2)
-        
+        self.conductor_rnn = nn.LSTM(batch_first=True,input_size=latent_dim, hidden_size=conductor_hidden_size, num_layers=2)
+        self.fc_1 = nn.Linear(conductor_hidden_size, conductor_output_dim) # to make the output embedding has the size of 512
+
+
         # Shared fully-connected layer for conductor embeddings
-        self.conductor_fc = nn.Linear(conductor_hidden_size, conductor_output_dim)
+        self.conductor_fc = nn.Linear(conductor_output_dim, conductor_output_dim)
         
         # Bottom-layer Decoder RNN: two-layer LSTM, assuming unidirectional since the paper only mention 2-LSTM
         self.bottom_decoder_rnn = nn.LSTM(batch_first=True,input_size=(conductor_output_dim + output_size), hidden_size=bottom_decoder_hidden_size, num_layers=2)
@@ -31,57 +34,77 @@ class HierarchicalDecoder(nn.Module):
         self.tanh = nn.Tanh()
         
     def forward(self, z, input_sequence):
-        # input_sequence : [BATCH_SIZE, SUBSEQUENCE, SEQ_LENGTH][256, 64, 27]
-        # z: [BATCH_SIZE, SUBSEQUENCE, LATENT_DIM]
+        # input_sequence : [BATCH_SIZE, seq_length, class][256, 64, 27]
+        # z: [BATCH_SIZE,LATENT_DIM]
 
         batch_size = z.size(0)
+       
         num_subsequences = input_sequence.size(1)
         seq_length = input_sequence.size(2)
 
         # Pass the latent vector through a fully-connected layer followed by a tanh activation
+        # Initial state of conductor RNN
         z = self.fc_z(z)
         z = self.tanh(z)
- 
+        z = z.unsqueeze(1)
+        z = z.repeat(1,2,1) # [BATCH_SIZE, num_layers, conductor_hidden_size]
         
-        conductor_hidden = torch.zeros(batch_size, 2,self.bottom_decoder_rnn.hidden_size)
-      
 
+        z = z.permute(1,0,2) # initial state expected to have shape of [num_layers, BATCH_SIZE, conductor_hidden_size] 
+    
+        # get embeddings from conductor
+        conductor_input = torch.zeros(size=(batch_size, 1, self.latent_dim))
+        embeddings = torch.empty(batch_size,16,self.latent_dim)
+        state = (z,z)
 
-        # Initialize the output tensor
-        output = torch.zeros(batch_size,num_subsequences,seq_length)
+        outputs = []
+        previous = torch.zeros((batch_size, self.output_size))
 
+        for i in range(16): # U=16
+            conductor_out, state = self.conductor_rnn(conductor_input,state)
 
-        # Autoregressively generate output tokens for each subsequence
-        # Subsequence U is 16
-        for i in range(4):
-
-            # Pass the conductor input through the Conductor RNN
-            embedding, _ = self.conductor_rnn(z[:,i*16,:], conductor_hidden) 
-      
-            #Each cu is individually passed through a shared fully-connected layer followed by a tanh activation to produce initial states for a final bottom-layer decoder RNN
-            embedding = self.conductor_fc(embedding)
-            embedding = self.tanh(embedding).unsqueeze(1)
-
-            decoder_hidden = (torch.randn(2, batch_size, self.bottom_decoder_rnn.hidden_size),
-                  torch.randn(2, batch_size, self.bottom_decoder_rnn.hidden_size))
-
-
-            
-            last_dim = embedding.shape[-1]
-            embedding = embedding.expand(batch_size, 16, last_dim)
-
-            #concatenated with the previous output token to be used as the input of bottom RNN
-            e = torch.cat([embedding,input_sequence[:,range(i*16,i*16+16),:]],dim=-1)
-
+            conductor_out = self.fc_1(conductor_out)
            
-            
-            bottom_output, decoder_hidden = self.bottom_decoder_rnn(e, decoder_hidden)
-            
-            temp = self.output_layer(bottom_output)
-            temp = torch.softmax(temp, dim=2)
-                
-            #generates 16 output per batch at a time
+            embeddings[:,i,:] = conductor_out[:,0]
 
-            output[:,range(i*16,i*16+16),:]=temp
+            conductor_input = conductor_out
+
+            output_decoder = []
+
+            init = torch.zeros(size=(2, batch_size, self.bottom_decoder_hidden_size))
+            
+            state2 = (init,init)
+            for _ in range(4): # T / U, loop through each subsequence length
+                emb = self.conductor_fc(embeddings[:,i,:])
+                emb = self.tanh(emb)
+            
+                l2_in = torch.cat((emb, previous), dim=1) # the current conductor embedding cu is concatenated with the previous output token to be used as the input
+                l2_in = l2_in.unsqueeze(1)
+
+         
+                h2,state2 = self.bottom_decoder_rnn(l2_in,state2)
+
+                previous = self.output_layer(h2)
+             
+                previous = previous.squeeze()
+                output_decoder.append(previous)
+            outputs.extend(output_decoder)
+            previous = output_decoder[-1]
+
+        output_tensor = torch.stack(outputs, dim=1)
         
+        output = torch.sigmoid(output_tensor)
+
+
+
         return output
+if __name__ == '__main__':
+    e = HierarchicalDecoder(512,27)
+    seq_length = 64
+    batch_size = 3
+    z = torch.rand(batch_size,512)
+    input = torch.rand(batch_size,seq_length,27)
+
+    output = e(z,input)
+
+    
