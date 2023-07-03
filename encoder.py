@@ -25,11 +25,12 @@ class Encoder(nn.Module):
         
         # LSTM forward pass
         output, _ = self.lstm(input_sequence)
+   
         
-        # Concatenate the final state vectors
-        h_T = torch.cat((output[-1, :, :self.hidden_size], output[0, :, self.hidden_size:]), dim=1)
+        # No need to concatenate, the final output contain a concatenation of the forward and reverse hidden states at each time step in the sequence, thus we need to get the last one
+        h_T = output[:,-1,:]
         
-     
+        
         mu = self.fc_mu(h_T) # W_hµ * h_T + b_µ (Equation (6))
         sigma = torch.log(torch.exp(self.fc_sigma(h_T)) + 1) # log (exp(W_hσ * h_T + b_σ) + 1) (Equation (7))
 
@@ -39,11 +40,23 @@ class Encoder(nn.Module):
 
         # Prevent gradient flowing through sampling during training because of randomness
         with torch.no_grad():
-            batch_size = input_sequence.size(0)
-            eps = torch.randn(batch_size, 1, self.latent_dim)
+           
+            eps = torch.randn_like(sigma)
 
         
         z = mu + eps*sigma  # ε ∼ N (0, I), z = µ + σ ⊙ ε (Equation (2))
 
-        
+        # mu: torch.Tensor[batch_size,latent_dim]
+        # sigma: torch.Tensor[batch_size,latent_dim]
+        # z: torch.Tensor[batch_size,latent_dim]
         return mu, sigma, z
+
+
+# if __name__ == '__main__':
+#     e = Encoder(27)
+#     seq_length = 64
+#     temp = torch.rand(512,seq_length,27)
+
+#     mu,sigma,z = e(temp)
+
+#     print(mu.shape, sigma.shape,z.shape)
